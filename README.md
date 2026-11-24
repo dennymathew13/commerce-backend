@@ -451,6 +451,55 @@ A fetch join retrieves the required product-category associations in the same qu
 
 The application uses MySQL as its persistent relational database.
 
+## Flyway Schema Versioning
+
+Flyway is the source of truth for database schema changes. It applies reviewed SQL migrations in a deterministic order, records them in the `flyway_schema_history` table, and prevents environments from silently drifting away from the schema expected by the application.
+
+The Maven build includes:
+
+- `com.mysql:mysql-connector-j` for the MySQL JDBC connection.
+- `org.springframework.boot:spring-boot-starter-flyway` for Spring Boot Flyway integration.
+- `org.flywaydb:flyway-mysql` for MySQL-specific Flyway support.
+
+Versioned migration scripts live in [`src/main/resources/db/migration`](src/main/resources/db/migration). The initial migration is [`V1__initial_schema.sql`](src/main/resources/db/migration/V1__initial_schema.sql), which creates the `category` and `product` tables, their keys, and the product-to-category foreign-key relationship.
+
+Migration files use Flyway's `V<version>__<description>.sql` convention. The version and description are separated by two underscores; for example, `V2__add_product_stock.sql`.
+
+Flyway runs pending migrations during application startup. Hibernate is configured with `spring.jpa.hibernate.ddl-auto: validate`, so Hibernate checks that the migrated schema matches the entity mappings but does not create or update tables itself. A schema mismatch therefore fails startup instead of being changed implicitly.
+
+### Fresh Database
+
+For an empty database, create the database and start the application. Flyway creates its schema-history table and applies `V1__initial_schema.sql` before Hibernate validates the schema. No manual table creation is required.
+
+### Existing Database Baseline
+
+An existing non-empty database that already matches the V1 schema must be baselined once instead of running the table-creation statements again:
+
+1. Back up the database and verify that its `category` and `product` tables, keys, and constraints match `V1__initial_schema.sql`.
+2. Confirm that the database does not already contain `flyway_schema_history`.
+3. Set `SPRING_FLYWAY_BASELINE_ON_MIGRATE=true` only for the first startup against that database. The configured baseline version is `1`, so Flyway records the existing schema as V1 without executing V1.
+4. After the baseline succeeds, remove the environment-variable override. Normal configuration keeps `baseline-on-migrate: false` so an unexpected non-empty, unmanaged schema fails safely.
+5. Restart normally and confirm that Flyway reports the schema as current and Hibernate validation succeeds.
+
+Do not baseline a partially matching schema. Bring it into exact agreement with V1 through a reviewed, backed-up database procedure first.
+
+### Development and Test Databases
+
+Development uses `commerce_db`. Tests activate the `test` profile and use the separate `commerce_test_db`, preventing automated tests from migrating or changing development data. GitHub Actions also provisions its own MySQL service with `commerce_test_db` and a separate Redis service for the CI job.
+
+Local verification with `.\mvnw.cmd clean verify` completed successfully with all tests passing, including Flyway validation against `commerce_test_db`. GitHub Actions runs the equivalent `mvn --batch-mode clean verify` workflow on pushes and pull requests to `master` and verifies the build with isolated MySQL and Redis services.
+
+### Rules for Future Migrations
+
+- Never edit, rename, reorder, or delete a versioned migration after it has been applied to a shared environment.
+- Add the next versioned script, such as `V2__description.sql`, for every schema change.
+- Keep each migration focused, deterministic, and compatible with the MySQL version used by the project.
+- Include required data transformations and constraints explicitly; do not rely on Hibernate schema generation.
+- Review destructive or locking operations carefully and back up important data before applying them.
+- Verify both an upgrade from the previous schema version and a migration of a fresh database.
+- Run `.\mvnw.cmd clean verify` before pushing, and let GitHub Actions complete successfully before merging.
+- Never place credentials, environment-specific secrets, or production data in migration scripts.
+
 ## Database Engineering
 
 - Table and column mapping
